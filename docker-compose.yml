@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: chat
+      POSTGRES_DB: chatdb
+    ports:
+      - "5432:5432"
+    volumes:
+      # Persists DB files on YOUR machine
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat -d chatdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: chat-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      # Persists Redis AOF on YOUR machine
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override hostnames for in-network Docker DNS
+      DATABASE_URL: postgresql+asyncpg://chat:chat@postgres:5432/chatdb
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Dev: live code reload without rebuild
+      - ./app:/app/app:ro
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+  # Second replica — proves Redis pub/sub fan-out (enable when messaging is built)
+  api-replica:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat-api-replica
+    restart: unless-stopped
+    profiles: ["scale"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://chat:chat@postgres:5432/chatdb
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
