@@ -10,13 +10,18 @@ from app.api.websocket import router as ws_router
 
 
 
+import asyncio
+from app.services.redis_pubsub import redis_subscriber_loop
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    task = asyncio.create_task(redis_subscriber_loop(app.state.redis))
     try:
         yield
     finally:
+        task.cancel()
         await app.state.redis.aclose()
 
 
